@@ -1,0 +1,336 @@
+[
+  {
+    "domain": "battery",
+    "timesteps": 1,
+    "value": 12.4,
+    "comparison": "<=",
+    "threshold_value": 11.0,
+    "is_action": false,
+    "action_text": "Return to base",
+    "inputs": [
+      {
+        "sensor_id": "battery1",
+        "sensor_type": "temperature",
+        "value": 12.4,
+        "unit": "C"
+      }
+    ],
+    "thresholds": [
+      {
+        "sensor_type": "temperature",
+        "comparison": "<=",
+        "threshold_value": 11.0,
+        "action_text": "Return to base"
+      }
+    ],
+    "output_essay": "This report describes the current sensor readings from 1 sensor(s) (battery1). The system continuously monitors the physical state to determine whether intervention is required.\n\nThe system is monitoring the current sensor readings. The measurement shows that the temperature of battery1 is 12.4°C. The temperature of 12.4°C is higher than the threshold of 11.0C. The system is stable and continues to monitor.\n\nIn conclusion, the system observed stable operation across all sensors. The monitoring continues.",
+    "timestamp": 1783201315.477628
+  },
+  {
+    "domain": "battery",
+    "timesteps": 1,
+    "value": 10.5,
+    "comparison": "<=",
+    "threshold_value": 11.0,
+    "is_action": true,
+    "action_text": "Return to base",
+    "inputs": [
+      {
+        "sensor_id": "battery1",
+        "sensor_type": "temperature",
+        "value": 10.5,
+        "unit": "C"
+      }
+    ],
+    "thresholds": [
+      {
+        "sensor_type": "temperature",
+        "comparison": "<=",
+        "threshold_value": 11.0,
+        "action_text": "Return to base"
+      }
+    ],
+    "output_essay": "This report describes the current sensor readings from 1 sensor(s) (battery1). The system continuously monitors the physical state to determine whether intervention is required.\n\nThe system is monitoring the current sensor readings. The measurement shows that the temperature of battery1 is 10.5°C. The temperature of 10.5°C is below or equal to the threshold of 11.0C. Return to base. The system has detected the condition and will respond accordingly.\n\nIn conclusion, the system detected a threshold breach and responded with the action(s): Return to base. The monitoring continues.",
+    "timestamp": 1783201315.4776642
+  },
+  {
+    "domain": "battery",
+    "timesteps": 1,
+    "value": 12.4,
+    "comparison": ">=",
+    "threshold_value": 11.0,
+    "is_action": true,
+    "action_text": "Alert",
+    "inputs": [
+      {
+        "sensor_id": "battery1",
+        "sensor_type": "temperature",
+        "value": 12.4,
+        "unit": "C"
+      }
+    ],
+    "thresholds": [
+      {
+        "sensor_type": "temperature",
+        "comparison": ">=",
+        "threshold_value": 11.0,
+        "action_text": "Alert"
+      }
+    ],
+    "output_essay": "This report describes the current sensor readings from 1 sensor(s) (battery1). The system continuously monitors the physical state to determine whether intervention is required.\n\nThe system is monitoring the current sensor readings. The measurement shows that the temperature of battery1 is 12.4°C. The temperature of 12.4°C is higher than or equal to the threshold of 11.0C. Alert. The system has detected the condition and will respond accordingly.\n\nIn conclusion, the system detected a threshold breach and responded with the action(s): Alert. The monitoring continues.",
+    "timestamp": 1783201315.4776866
+  },
+  {
+    "domain": "battery",
+    "timesteps": 1,
+    "value": 10.5,
+    "comparison": ">=",
+    "threshold_value": 11.0,
+    "is_action": false,
+    "action_text": "Alert",
+    "inputs": [
+      {
+        "sensor_id": "battery1",
+        "sensor_type": "temperature",
+        "value": 10.5,
+        "unit": "C"
+      }
+    ],
+    "thresholds": [
+      {
+        "sensor_type": "temperature",
+        "comparison": ">=",
+        "threshold_value": 11.0,
+        "action_text": "Alert"
+      }
+    ],
+    "output_essay": "This report describes the current sensor readings from 1 sensor(s) (battery1). The system continuously monitors the physical state to determine whether intervention is required.\n\nThe system is monitoring the current sensor readings. The measurement shows that the temperature of battery1 is 10.5°C. The temperature of 10.5°C is below the threshold of 11.0C. The system is stable and continues to monitor.\n\nIn conclusion, the system observed stable operation across all sensors. The monitoring continues.",
+    "timestamp": 1783201315.4777186
+  },
+  {
+    "domain": "motor",
+    "timesteps": 1,
+    "value": 35.0,
+    "comparison": ">=",
+    "threshold_value": 80.0,
+    "is_action": false,
+    "action_text": "Stop motor",
+    "inputs": [
+      {
+        "sensor_id": "motor2",
+        "sensor_type": "temperature",
+        "value": 35.0,
+        "unit": "C"
+      }
+    ],
+    "thresholds": [
+      {
+        "sensor_type": "temperature",
+        "comparison": ">=",
+        "threshold_value": 80.0,
+        "action_text": "Stop motor"
+      }
+    ],
+    "output_essay": "This report describes the current sensor readings from 1 sensor(s) (motor2). The system continuously monitors the physical state to determine whether intervention is required.\n\nThe system is monitoring the current sensor readings. The measurement shows that the temperature of motor2 is 35.0°C. The temperature of 35.0°C is below the threshold of 80.0C. The system is stable and continues to monitor.\n\nIn conclusion, the system observed stable operation across all sensors. The monitoring continues.",
+    "timestamp": 1783201315.4777417
+  },
+  {
+    "domain": "motor",
+    "timesteps": 1,
+    "value": 85.0,
+    "comparison": ">=",
+    "threshold_value": 80.0,
+    "is_action": true,
+    "action_text": "Stop motor",
+    "inputs": [
+      {
+        "sensor_id": "motor2",
+        "sensor_type": "temperature",
+        "value": 85.0,
+        "unit": "C"
+      }
+    ],
+    "thresholds": [
+      {
+        "sensor_type": "temperature",
+        "comparison": ">=",
+        "threshold_value": 80.0,
+        "action_text": "Stop motor"
+      }
+    ],
+    "output_essay": "This report describes the current sensor readings from 1 sensor(s) (motor2). The system continuously monitors the physical state to determine whether intervention is required.\n\nThe system is monitoring the current sensor readings. The measurement shows that the temperature of motor2 is 85.0°C. The temperature of 85.0°C is higher than or equal to the threshold of 80.0C. Stop motor. The system has detected the condition and will respond accordingly.\n\nIn conclusion, the system detected a threshold breach and responded with the action(s): Stop motor. The monitoring continues.",
+    "timestamp": 1783201315.4777565
+  },
+  {
+    "domain": "motor",
+    "timesteps": 1,
+    "value": 35.0,
+    "comparison": "<=",
+    "threshold_value": 20.0,
+    "is_action": false,
+    "action_text": "Heat motor",
+    "inputs": [
+      {
+        "sensor_id": "motor2",
+        "sensor_type": "temperature",
+        "value": 35.0,
+        "unit": "C"
+      }
+    ],
+    "thresholds": [
+      {
+        "sensor_type": "temperature",
+        "comparison": "<=",
+        "threshold_value": 20.0,
+        "action_text": "Heat motor"
+      }
+    ],
+    "output_essay": "This report describes the current sensor readings from 1 sensor(s) (motor2). The system continuously monitors the physical state to determine whether intervention is required.\n\nThe system is monitoring the current sensor readings. The measurement shows that the temperature of motor2 is 35.0°C. The temperature of 35.0°C is higher than the threshold of 20.0C. The system is stable and continues to monitor.\n\nIn conclusion, the system observed stable operation across all sensors. The monitoring continues.",
+    "timestamp": 1783201315.4777684
+  },
+  {
+    "domain": "motor",
+    "timesteps": 1,
+    "value": 15.0,
+    "comparison": "<=",
+    "threshold_value": 20.0,
+    "is_action": true,
+    "action_text": "Heat motor",
+    "inputs": [
+      {
+        "sensor_id": "motor2",
+        "sensor_type": "temperature",
+        "value": 15.0,
+        "unit": "C"
+      }
+    ],
+    "thresholds": [
+      {
+        "sensor_type": "temperature",
+        "comparison": "<=",
+        "threshold_value": 20.0,
+        "action_text": "Heat motor"
+      }
+    ],
+    "output_essay": "This report describes the current sensor readings from 1 sensor(s) (motor2). The system continuously monitors the physical state to determine whether intervention is required.\n\nThe system is monitoring the current sensor readings. The measurement shows that the temperature of motor2 is 15.0°C. The temperature of 15.0°C is below or equal to the threshold of 20.0C. Heat motor. The system has detected the condition and will respond accordingly.\n\nIn conclusion, the system detected a threshold breach and responded with the action(s): Heat motor. The monitoring continues.",
+    "timestamp": 1783201315.4778006
+  },
+  {
+    "domain": "multidomain",
+    "timesteps": 3,
+    "domains": [
+      "gpu",
+      "battery",
+      "motor"
+    ],
+    "trends": {
+      "gpu": "rising",
+      "battery": "stable",
+      "motor": "rising"
+    },
+    "domain_status": {
+      "gpu": "action",
+      "battery": "stable",
+      "motor": "stable"
+    },
+    "inputs": {
+      "gpu": [
+        [
+          {
+            "sensor_id": "card0",
+            "sensor_type": "temperature",
+            "value": 44.0
+          }
+        ],
+        [
+          {
+            "sensor_id": "card0",
+            "sensor_type": "temperature",
+            "value": 46.0
+          }
+        ],
+        [
+          {
+            "sensor_id": "card0",
+            "sensor_type": "temperature",
+            "value": 48.0
+          }
+        ]
+      ],
+      "battery": [
+        [
+          {
+            "sensor_id": "battery1",
+            "sensor_type": "temperature",
+            "value": 12.5
+          }
+        ],
+        [
+          {
+            "sensor_id": "battery1",
+            "sensor_type": "temperature",
+            "value": 12.3
+          }
+        ],
+        [
+          {
+            "sensor_id": "battery1",
+            "sensor_type": "temperature",
+            "value": 12.4
+          }
+        ]
+      ],
+      "motor": [
+        [
+          {
+            "sensor_id": "motor2",
+            "sensor_type": "temperature",
+            "value": 30.0
+          }
+        ],
+        [
+          {
+            "sensor_id": "motor2",
+            "sensor_type": "temperature",
+            "value": 32.0
+          }
+        ],
+        [
+          {
+            "sensor_id": "motor2",
+            "sensor_type": "temperature",
+            "value": 35.0
+          }
+        ]
+      ]
+    },
+    "thresholds": {
+      "gpu": [
+        {
+          "sensor_type": "temperature",
+          "comparison": ">=",
+          "threshold_value": 40.0,
+          "action_text": "Move quickly"
+        }
+      ],
+      "battery": [
+        {
+          "sensor_type": "temperature",
+          "comparison": "<=",
+          "threshold_value": 11.0,
+          "action_text": "Return to base"
+        }
+      ],
+      "motor": [
+        {
+          "sensor_type": "temperature",
+          "comparison": ">=",
+          "threshold_value": 80.0,
+          "action_text": "Stop motor"
+        }
+      ]
+    },
+    "output_essay": "This report describes the multi-domain sensor state over the recent measurement window. The system has monitored 3 domain(s) (gpu, battery, motor) across 3 time step(s).\n\n[GPU] The system is monitoring the current sensor readings. The measurement shows that the temperature of card0 is 48.0°C. The temperature of 48.0°C is higher than or equal to the threshold of 40.0C. Move quickly. The system has detected the condition and will respond accordingly. (trend: rising)\n\n[BATTERY] The system is monitoring the current sensor readings. The measurement shows that the temperature of battery1 is 12.4°C. The temperature of 12.4°C is higher than the threshold of 11.0C. The system is stable and continues to monitor. (trend: stable)\n\n[MOTOR] The system is monitoring the current sensor readings. The measurement shows that the temperature of motor2 is 35.0°C. The temperature of 35.0°C is below the threshold of 80.0C. The system is stable and continues to monitor. (trend: rising)\n\nIn conclusion, the system has integrated multiple sensor domains and responded according to the measured state. The monitoring continues.",
+    "timestamp": 1783201315.4778678
+  }
+]
