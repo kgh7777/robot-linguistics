@@ -1,0 +1,46 @@
+# === Sensor Grounding Pipeline Requirements ===
+# Python version
+# python>=3.9
+
+# Core data structures
+dataclasses>=0.6
+
+# Standard library (built-in, no install needed)
+# - json
+# - re
+# - sys
+# - time
+# - importlib
+
+# LLM endpoints (optional, for LLM mode)
+# requests>=2.28  # HTTP client for LLM API
+# aiohttp>=3.8    # async HTTP for streaming
+
+# Test framework
+pytest>=7.0      # 단위 테스트 (42개 테스트)
+pytest-cov>=4.0  # 코드 커버리지 (선택)
+
+# Type checking (optional, recommended)
+typing>=3.7
+typing-extensions>=4.0
+
+# === Optional: Real sensor data ===
+# For real GPU telemetry (Radeon/AMD)
+# pynvml>=11.0      # NVIDIA GPU (참고용)
+# rocm-smi>=0.0.1   # AMD GPU (시스템 패키지)
+# subprocess         # for rocm-smi --json (built-in)
+
+# === Optional: ROS 2 integration ===
+# rclpy>=3.0         # ROS 2 Python client
+# sensor-msgs        # 표준 ROS 메시지 타입
+
+# === Optional: LLM evaluation ===
+# transformers>=4.30 # Hugging Face transformers
+# accelerate>=0.20   # LLM 가속
+# bitsandbytes>=0.39 # LLM 양자화
+# vllm>=0.3          # LLM 서빙
+
+# 4-way Radeon GPU essay 합성 (현재 단계에서 사용)
+# GPU telemetry: rocm-smi (시스템 명령)
+# LLM: Ollama (Qwen2.5-32B, Llama 3.3-70B)
+# Python 3.12+

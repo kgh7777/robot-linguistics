@@ -1,0 +1,13 @@
+{
+  "vector_input": "[card0 T:44.0C,P:28.0W,V:NAMiB,U:1.0%] [card0 T:NAC,P:NAW,V:NAMiB,U:NA%]",
+  "conditions_text": "임계치: T>=40.0C → 'Move quickly', P>=250.0W → 'Reduce load', V>=14000.0MiB → 'Free memory'\ncard-1: T=44.0C >= 40.0C → action(s): Move quickly\n포함할 action 문구: ['Move quickly']",
+  "thresholds": {
+    "temp_high_c": 40.0,
+    "power_high_w": 250.0,
+    "vram_high_mib": 14000.0
+  },
+  "raw_response": "KO: card0의 GPU 온도가 44.0°C로 임계치를 초과하여 Move quickly 조치가 필요합니다.\nEN: The GPU temperature of card0 is 44.0°C, exceeding the threshold, requiring the action Move quickly.",
+  "ko_sentence": "card0의 GPU 온도가 44.0°C로 임계치를 초과하여 Move quickly 조치가 필요합니다.",
+  "en_sentence": "The GPU temperature of card0 is 44.0°C, exceeding the threshold, requiring the action Move quickly.",
+  "http_status": 200
+}

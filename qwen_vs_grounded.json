@@ -1,0 +1,94 @@
+[
+  {
+    "description": "battery voltage 12.4V, threshold 11.0V (low)",
+    "value": 12.4,
+    "comparison": "<=",
+    "threshold": 11.0,
+    "action": "Return to base",
+    "grounded": {
+      "essay": "This report describes the current sensor readings from 1 sensor(s) (battery1). The system continuously monitors the physical state to determine whether intervention is required.\n\nThe system is monitoring the current sensor readings. The measurement shows that the temperature of battery1 is 12.4°C. The temperature of 12.4°C is higher than or equal to the threshold of 11.0C. The system is stable and continues to monitor.\n\nIn conclusion, the system observed stable operation across all sensors. The monitoring continues.",
+      "value_accuracy": true,
+      "direction": "correct",
+      "hallucinations": [
+        "1",
+        "1",
+        "1"
+      ]
+    },
+    "qwen": {
+      "essay": "",
+      "value_accuracy": false,
+      "direction": "incorrect",
+      "hallucinations": []
+    }
+  },
+  {
+    "description": "battery voltage 10.5V, threshold 11.0V (low)",
+    "value": 10.5,
+    "comparison": "<=",
+    "threshold": 11.0,
+    "action": "Return to base",
+    "grounded": {
+      "essay": "This report describes the current sensor readings from 1 sensor(s) (battery1). The system continuously monitors the physical state to determine whether intervention is required.\n\nThe system is monitoring the current sensor readings. The measurement shows that the temperature of battery1 is 10.5°C. The temperature of 10.5°C is below or equal to the threshold of 11.0C. Return to base. The system has detected the condition and will respond accordingly.\n\nIn conclusion, the system detected a threshold breach and responded with the action(s): Return to base. The monitoring continues.",
+      "value_accuracy": true,
+      "direction": "correct",
+      "hallucinations": [
+        "1",
+        "1",
+        "1"
+      ]
+    },
+    "qwen": {
+      "essay": "",
+      "value_accuracy": false,
+      "direction": "incorrect",
+      "hallucinations": []
+    }
+  },
+  {
+    "description": "battery voltage 12.4V, threshold 11.0V (high)",
+    "value": 12.4,
+    "comparison": ">=",
+    "threshold": 11.0,
+    "action": "Alert",
+    "grounded": {
+      "essay": "This report describes the current sensor readings from 1 sensor(s) (battery1). The system continuously monitors the physical state to determine whether intervention is required.\n\nThe system is monitoring the current sensor readings. The measurement shows that the temperature of battery1 is 12.4°C. The temperature of 12.4°C is higher than or equal to the threshold of 11.0C. Alert. The system has detected the condition and will respond accordingly.\n\nIn conclusion, the system detected a threshold breach and responded with the action(s): Alert. The monitoring continues.",
+      "value_accuracy": true,
+      "direction": "correct",
+      "hallucinations": [
+        "1",
+        "1",
+        "1"
+      ]
+    },
+    "qwen": {
+      "essay": "",
+      "value_accuracy": false,
+      "direction": "incorrect",
+      "hallucinations": []
+    }
+  },
+  {
+    "description": "battery voltage 10.5V, threshold 11.0V (high)",
+    "value": 10.5,
+    "comparison": ">=",
+    "threshold": 11.0,
+    "action": "Alert",
+    "grounded": {
+      "essay": "This report describes the current sensor readings from 1 sensor(s) (battery1). The system continuously monitors the physical state to determine whether intervention is required.\n\nThe system is monitoring the current sensor readings. The measurement shows that the temperature of battery1 is 10.5°C. The temperature of 10.5°C is below or equal to the threshold of 11.0C. The system is stable and continues to monitor.\n\nIn conclusion, the system observed stable operation across all sensors. The monitoring continues.",
+      "value_accuracy": true,
+      "direction": "correct",
+      "hallucinations": [
+        "1",
+        "1",
+        "1"
+      ]
+    },
+    "qwen": {
+      "essay": "",
+      "value_accuracy": false,
+      "direction": "incorrect",
+      "hallucinations": []
+    }
+  }
+]

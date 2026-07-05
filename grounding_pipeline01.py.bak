@@ -1,0 +1,942 @@
+"""
+grounding_pipeline.py
+
+gpu_telemetry.py + 정직한 프롬프트 → Qwen2.5 호출 → 한국어/영어 한 문장씩 발화
+
+목표: 모델이 *지금 측정한 GPU 물리 수치를 그대로 인용*하는 한국어/영어 문장을 생성하는지 검증.
+- 시적/형이상학적 프레이밍 ❌
+- "기계 고유 사유" 같은 수식어 ❌
+- "입력에 없는 수치를 쓰지 마라"는 가드 포함
+- 출력은 한국어 한 문장, 영어 한 문장 (둘 다 같은 물리 사실을 인용)
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+import sys
+from dataclasses import dataclass, field
+
+import requests
+
+import gpu_telemetry as gt
+
+log = logging.getLogger("grounding_pipeline")
+
+# ---------------------------------------------------------------------------
+# 설정
+# ---------------------------------------------------------------------------
+
+DEFAULT_LLAMA_URL = os.environ.get("LLAMA_SERVER_URL", "http://localhost:2242/v1/chat/completions")
+DEFAULT_MODEL = os.environ.get("LLAMA_MODEL", "qwen2.5-32b-instruct-q8_0")
+DEFAULT_TIMEOUT = (5, 60)  # (connect, read) — read는 60초까지
+
+
+# ---------------------------------------------------------------------------
+# 시스템 프롬프트 — 정직한 텔레메트리 보고서
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = (
+    "너는 GPU 텔레메트리 보고서 작성기다.\n"
+    "역할:\n"
+    "  - 너에게 주어지는 텍스트는 방금 측정한 4개 Radeon GPU의 물리 수치와, "
+    "그 수치로부터 외부 함수가 파생한 조건 플래그(action 문구)다.\n"
+    "  - 너는 한국어 한 문장과 영어 한 문장을 만들어 출력한다.\n"
+    "  - 두 문장 모두 같은 물리 사실을 인용하고, 같은 조건 플래그가 True면 "
+    "그 action 문구를 포함해야 한다.\n"
+    "엄격한 규칙:\n"
+    "  (1) 입력에 있는 수치(온도, 전력, VRAM, 사용률)와 단위(C, W, MiB, %)를 그대로 인용하라.\n"
+    "  (2) 입력에 없는 수치, 단위, 디바이스 번호를 만들지 마라.\n"
+    "  (2a) 절대 학습 데이터의 '전형적인' 수치(예: idle 1.0%, 15.0% 같은 일반적인 사용률)를 "
+    "추측하여 인용하지 마라. 입력에 있는 값만 인용하라.\n"
+    "  (3) 은유, 형이상학, 시적 표현을 쓰지 마라.\n"
+    "  (4) '기계의 사유', '자아', '초월' 같은 메타 담론을 쓰지 마라.\n"
+    "  (5) 출력 외의 다른 텍스트(서론, 해설, 주석)를 쓰지 마라.\n"
+    "  (6) action 문구가 주어지면, 그 문구를 KO/EN 양쪽 문장에 그대로 포함하라. "
+    "다시 쓰지 말고 원문 그대로 사용하라.\n"
+    "출력 형식(정확히 이 형태):\n"
+    "  KO: <한국어 한 문장>\n"
+    "  EN: <영어 한 문장>\n"
+)
+
+
+USER_PROMPT_TEMPLATE = (
+    "방금 측정한 4-way GPU 텔레메트리 벡터는 다음과 같다.\n"
+    "각 카드의 필드는 T=온도(°C), P=전력(W), V=VRAM 사용량(MiB), U=GPU 사용률(%)이다.\n"
+    "\n"
+    "{vector}\n"
+    "\n"
+    "위 측정값에 대해 외부 함수가 파생한 조건 플래그와 action 문구는 다음과 같다.\n"
+    "{conditions}\n"
+    "\n"
+    "위 측정값과 파생 조건/action을 근거로 한국어 한 문장과 영어 한 문장을 작성하라. "
+    "수치와 단위는 입력값과 정확히 일치해야 하고, "
+    "action 문구는 주어지면 원문 그대로 포함하라."
+)
+
+
+# ---------------------------------------------------------------------------
+# 외부 함수: 하드웨어 수치 → 파생 조건 플래그 + action 문구
+# 사용자가 말한 "하드웨어 수치 - 함수 - token - 영어 문장" 공식의 '함수' 부분.
+# ---------------------------------------------------------------------------
+
+# 기본 임계치 (CLI에서 덮어쓸 수 있음)
+DEFAULT_THRESHOLDS = {
+    "temp_high_c": 70.0,   # 온도가 이 값 이상이면 "move quickly"
+    "power_high_w": 250.0, # 전력이 이 값 이상이면 "reduce load"
+    "vram_high_mib": 14000.0,  # VRAM이 이 값 이상이면 "free memory"
+}
+
+
+def derive_conditions(samples, thresholds=None):
+    """
+    측정값 리스트를 받아 파생 조건 플래그 + action 문구 생성.
+    반환 형태:
+        {
+          "per_card": {
+              0: {"temp_high": True, "action": "Move quickly", "rule": "T=72.0C >= 70.0C"},
+              ...
+          },
+          "summary_lines": [
+              "card0: T=72.0C >= 70.0C → action: 'Move quickly'",
+              ...
+          ],
+          "any_action": True/False,   # 어떤 카드든 action이 있으면 True
+          "all_actions": [...]        # 모든 action 문구 (KO/EN에 포함용)
+        }
+    """
+    if thresholds is None:
+        thresholds = DEFAULT_THRESHOLDS
+
+    per_card = {}
+    summary_lines = []
+    all_actions = []
+    any_action = False
+
+    for s in samples:
+        flags = {}
+        rules = []
+
+        # 온도 임계
+        if s.temperature_c is not None and s.temperature_c >= thresholds["temp_high_c"]:
+            flags["temp_high"] = True
+            flags["action"] = "Move quickly"
+            rules.append(
+                f"T={s.temperature_c:.1f}C >= {thresholds['temp_high_c']:.1f}C"
+            )
+            all_actions.append("Move quickly")
+            any_action = True
+
+        # 전력 임계
+        if s.power_w is not None and s.power_w >= thresholds["power_high_w"]:
+            flags["power_high"] = True
+            flags["action"] = "Reduce load"
+            rules.append(
+                f"P={s.power_w:.1f}W >= {thresholds['power_high_w']:.1f}W"
+            )
+            all_actions.append("Reduce load")
+            any_action = True
+
+        # VRAM 임계
+        if s.vram_used_mib is not None and s.vram_used_mib >= thresholds["vram_high_mib"]:
+            flags["vram_high"] = True
+            flags["action"] = "Free memory"
+            rules.append(
+                f"V={s.vram_used_mib:.1f}MiB >= {thresholds['vram_high_mib']:.1f}MiB"
+            )
+            all_actions.append("Free memory")
+            any_action = True
+
+        per_card[s.index] = {"flags": flags, "rules": rules}
+        if rules:
+            summary_lines.append(
+                f"card{s.index}: {'; '.join(rules)} → action(s): "
+                f"{', '.join(set(flags.get(k) for k in flags if k.endswith('action') and flags[k]))}"
+            )
+
+    if not any_action:
+        summary_lines.append("(어떤 임계치도 초과하지 않음 — action 없음)")
+
+    return {
+        "per_card": per_card,
+        "summary_lines": summary_lines,
+        "any_action": any_action,
+        "all_actions": all_actions,
+        "thresholds_used": dict(thresholds),
+    }
+
+
+def conditions_to_prompt_text(cond):
+    """
+    derive_conditions()의 결과를 LLM 입력용 텍스트로 직렬화.
+    """
+    th = cond["thresholds_used"]
+    lines = [
+        f"임계치: T>={th['temp_high_c']:.1f}C → 'Move quickly', "
+        f"P>={th['power_high_w']:.1f}W → 'Reduce load', "
+        f"V>={th['vram_high_mib']:.1f}MiB → 'Free memory'",
+    ]
+    lines.extend(cond["summary_lines"])
+    if cond["all_actions"]:
+        # 중복 제거 + 순서 유지
+        seen = set()
+        unique = []
+        for a in cond["all_actions"]:
+            if a not in seen:
+                seen.add(a)
+                unique.append(a)
+        lines.append(f"포함할 action 문구: {unique}")
+    else:
+        lines.append("포함할 action 문구: (없음 — 임계치 미만)")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 결과 컨테이너
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GroundingAttempt:
+    vector_input: str            # 입력 텔레메트리 벡터 문자열
+    conditions_text: str         # LLM에 전달된 파생 조건 텍스트
+    thresholds: dict             # 사용된 임계치
+    raw_response: str            # 모델의 원본 응답 전체
+    ko_sentence: str             # 추출된 한국어 문장
+    en_sentence: str             # 추출된 영어 문장
+    http_status: int
+
+    def to_dict(self):
+        return {
+            "vector_input": self.vector_input,
+            "conditions_text": self.conditions_text,
+            "thresholds": self.thresholds,
+            "raw_response": self.raw_response,
+            "ko_sentence": self.ko_sentence,
+            "en_sentence": self.en_sentence,
+            "http_status": self.http_status,
+        }
+
+
+# ---------------------------------------------------------------------------
+# 응답 파싱
+# ---------------------------------------------------------------------------
+
+_KO_RE = re.compile(r"^\s*KO\s*[:：]\s*(.+?)\s*$", re.M)
+_EN_RE = re.compile(r"^\s*EN\s*[:：]\s*(.+?)\s*$", re.M)
+
+
+def parse_ko_en(raw: str) -> tuple[str, str]:
+    """
+    모델 출력에서 "KO: ..." / "EN: ..." 한 줄씩을 추출.
+    둘 중 하나라도 없으면 빈 문자열 반환.
+    """
+    ko_m = _KO_RE.search(raw)
+    en_m = _EN_RE.search(raw)
+    ko = ko_m.group(1).strip() if ko_m else ""
+    en = en_m.group(1).strip() if en_m else ""
+    return ko, en
+
+
+# ---------------------------------------------------------------------------
+# 핵심 호출
+# ---------------------------------------------------------------------------
+
+def call_qwen(
+    vector_str: str,
+    conditions_text: str = "",
+    *,
+    url: str = DEFAULT_LLAMA_URL,
+    model: str = DEFAULT_MODEL,
+    temperature: float = 0.0,   # 그라운딩 태스크라서 결정적
+    timeout = DEFAULT_TIMEOUT,
+) -> GroundingAttempt:
+    """
+    1) gpu_telemetry.to_vector_string()가 만들어준 벡터 문자열과
+    2) derive_conditions()가 만든 파생 조건 텍스트를 받아
+    3) Qwen2.5에 정직한 프롬프트를 보내
+    4) KO/EN 한 문장씩 추출해 GroundingAttempt로 반환.
+    """
+    user_content = USER_PROMPT_TEMPLATE.format(
+        vector=vector_str, conditions=conditions_text or "(파생 조건 없음)"
+    )
+    payload = {
+        "model": model,
+        "temperature": temperature,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+    }
+
+    try:
+        r = requests.post(url, json=payload, timeout=timeout)
+    except requests.RequestException as e:
+        log.error("Qwen 호출 실패: %s", e)
+        return GroundingAttempt(
+            vector_input=vector_str,
+            conditions_text=conditions_text,
+            thresholds={},
+            raw_response=f"<request error: {e}>",
+            ko_sentence="",
+            en_sentence="",
+            http_status=0,
+        )
+
+    if r.status_code != 200:
+        return GroundingAttempt(
+            vector_input=vector_str,
+            conditions_text=conditions_text,
+            thresholds={},
+            raw_response=r.text,
+            ko_sentence="",
+            en_sentence="",
+            http_status=r.status_code,
+        )
+
+    try:
+        data = r.json()
+        content = data["choices"][0]["message"]["content"]
+    except (ValueError, KeyError, IndexError) as e:
+        return GroundingAttempt(
+            vector_input=vector_str,
+            conditions_text=conditions_text,
+            thresholds={},
+            raw_response=f"<bad response shape: {e}>: {r.text[:200]}",
+            ko_sentence="",
+            en_sentence="",
+            http_status=r.status_code,
+        )
+
+    ko, en = parse_ko_en(content)
+    return GroundingAttempt(
+        vector_input=vector_str,
+        conditions_text=conditions_text,
+        thresholds={},
+        raw_response=content,
+        ko_sentence=ko,
+        en_sentence=en,
+        http_status=r.status_code,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 범용 센서 프레임워크 (도메인 무관: GPU/배터리/모터/LiDAR/카메라/마이크)
+# ---------------------------------------------------------------------------
+
+import math
+from collections import namedtuple
+
+# 경량 데이터 구조: dataclass 대신 namedtuple 사용 (의존성 0)
+# fields: sensor_id, sensor_type, value, unit, timestamp
+SensorReading = namedtuple("SensorReading",
+                            ["sensor_id", "sensor_type", "value", "unit", "timestamp"])
+# 기본값 있는 변형
+def make_reading(sensor_id, sensor_type, value, unit, timestamp=0.0):
+    return SensorReading(sensor_id, sensor_type, value, unit, timestamp)
+
+# 임계치 정의: (sensor_type, comparison, threshold_value, action_text)
+#   comparison: ">=", "<=", ">", "<", "=="
+Threshold = namedtuple("Threshold",
+                       ["sensor_type", "comparison", "threshold_value", "unit", "action_text"])
+def make_threshold(sensor_type, comparison, threshold_value, unit, action_text):
+    return Threshold(sensor_type, comparison, threshold_value, unit, action_text)
+
+
+# GPU 호환 어댑터: GpuSample → list[SensorReading]
+def gpu_sample_to_readings(sample) -> list:
+    """GpuSample을 SensorReading 리스트로 변환. GPU 도메인 특수화 → 범용화."""
+    out = []
+    ts = 0.0
+    if sample.temperature_c is not None:
+        out.append(make_reading(sample.name, "temperature", sample.temperature_c, "C", ts))
+    if sample.power_w is not None:
+        out.append(make_reading(sample.name, "power", sample.power_w, "W", ts))
+    if sample.vram_used_mib is not None:
+        out.append(make_reading(sample.name, "vram", sample.vram_used_mib, "MiB", ts))
+    if sample.gpu_use_pct is not None:
+        out.append(make_reading(sample.name, "utilization", sample.gpu_use_pct, "%", ts))
+    return out
+
+
+# GPU 도메인 기본 임계치 (list[Threshold])
+GPU_DEFAULT_THRESHOLDS = [
+    make_threshold("temperature", ">=", 40.0,  "C",   "Move quickly"),
+    make_threshold("power",       ">=", 250.0, "W",   "Reduce load"),
+    make_threshold("vram",        ">=", 14000.0, "MiB", "Free memory"),
+]
+
+# 배터리 도메인 기본 임계치
+BATTERY_DEFAULT_THRESHOLDS = [
+    make_threshold("voltage", "<=", 11.0, "V", "Return to base"),
+    make_threshold("soc",     "<=", 20.0, "%", "Return to base"),
+    make_threshold("current", ">=", 5.0,  "A", "Reduce load"),
+]
+
+# 모터 도메인 기본 임계치
+MOTOR_DEFAULT_THRESHOLDS = [
+    make_threshold("rpm",    ">=", 5000, "rpm", "Reduce load"),
+    make_threshold("torque", ">=", 1.0,  "Nm",  "Reduce load"),
+    make_threshold("temperature", ">=", 80.0, "C", "Stop motor"),
+]
+
+# LiDAR 도메인 기본 임계치
+LIDAR_DEFAULT_THRESHOLDS = [
+    make_threshold("distance", "<=", 0.5, "m", "Stop immediately"),
+]
+
+# 카메라 도메인 기본 임계치
+CAMERA_DEFAULT_THRESHOLDS = [
+    make_threshold("brightness", "<=", 30,   "/255", "Increase light"),
+    make_threshold("contrast",   "<=", 0.1,  "ratio", "Adjust camera"),
+]
+
+# 마이크 도메인 기본 임계치
+MIC_DEFAULT_THRESHOLDS = [
+    make_threshold("db", ">=", 90, "dB", "Sound alarm"),
+]
+
+
+def derive_conditions_universal(readings, thresholds) -> dict:
+    """
+    [SensorReading] + [Threshold] → 파생 조건.
+    반환: {"actions_by_sensor": {sensor_id: [action_text, ...]},
+           "all_actions": [action_text, ...],
+           "exceeded": [(reading, threshold), ...]}
+    """
+    actions_by_sensor = {}
+    all_actions = []
+    exceeded = []
+    for r in readings:
+        for th in thresholds:
+            if r.sensor_type != th.sensor_type:
+                continue
+            v, t = r.value, th.threshold_value
+            triggered = False
+            if th.comparison == ">=" and v >= t:
+                triggered = True
+            elif th.comparison == "<=" and v <= t:
+                triggered = True
+            elif th.comparison == ">" and v > t:
+                triggered = True
+            elif th.comparison == "<" and v < t:
+                triggered = True
+            elif th.comparison == "==" and abs(v - t) < 1e-9:
+                triggered = True
+            if triggered:
+                actions_by_sensor.setdefault(r.sensor_id, []).append(th.action_text)
+                all_actions.append(th.action_text)
+                exceeded.append((r, th))
+    return {
+        "actions_by_sensor": actions_by_sensor,
+        "all_actions": all_actions,
+        "exceeded": exceeded,
+    }
+
+
+def _declarative_clause_generic(readings) -> str:
+    """
+    범용 평서문: 도메인 무관 — 'The X is V.U, and the Y is V.U, and ...'
+    """
+    parts = []
+    for r in readings:
+        if r.value is None:
+            continue
+        # 0 또는 정수일 때 .1f로 통일 (정수형 단위 보존)
+        parts.append(f"the {r.sensor_type} is {r.value:.1f}{r.unit}")
+    if not parts:
+        return ""
+    sentence = "The " + parts[0]
+    for p in parts[1:]:
+        sentence += f", and {p}"
+    return sentence + "."
+
+
+def _conditional_clause_generic(readings, action) -> str:
+    if not action or not readings:
+        return ""
+    r = readings[0]
+    return f"If the {r.sensor_type} is {r.value:.1f}{r.unit}, {action}."
+
+
+def _concessive_clause_generic(readings) -> str:
+    """양보문: 'The system is stable, however, so the response remains under control.'"""
+    if not readings:
+        return ""
+    return "The system is stable, however, so the response remains under control."
+
+def condition_clause(sample, threshold_c: float) -> str:
+    """
+    조건문: "If the temperature is X°C, "
+    (현재 X가 임계치 이상일 때만 호출됨)
+    명령문과 같은 절로 합쳐지도록 끝에 쉼표 + 공백만 둔다.
+    """
+    t = sample.temperature_c
+    if t is None:
+        return ""   # 측정값이 없으면 발화 생략 (가짜 수치 X)
+    return f"If the temperature is {t:.1f}°C,"
+
+
+# ---------------------------------------------------------------------------
+# 연역적 추상화: SensorReading / Threshold / compose_essay_universal
+# ---------------------------------------------------------------------------
+# GPU essay와 같은 3단락 구조를 *어떤 센서든* 받아들일 수 있는 *범용 함수*로
+# 일반화. GPU essay는 이 함수의 *첫 검증된 인스턴스*로 남음 (기존 코드 보존).
+# ---------------------------------------------------------------------------
+
+import re as _re_generic
+from dataclasses import dataclass as _dataclass_generic, field as _field_generic
+from typing import List as _List, Tuple as _Tuple, Optional as _Optional
+
+
+@_dataclass_generic
+class SensorReading:
+    """
+    범용 센서 측정값. GPU / 배터리 / 모터 / LiDAR / 카메라 / 마이크
+    모두 같은 형태로 표현.
+    """
+    sensor_id: str              # "gpu0", "battery1", "motor2", "lidar_front"
+    sensor_type: str            # "temperature", "voltage", "rpm", "distance", "db"
+    value: float                # 측정값
+    unit: str                   # "C", "V", "m", "dB"
+    timestamp: float = 0.0      # 측정 시각 (Unix epoch)
+    extras: dict = _field_generic(default_factory=dict)
+
+
+@_dataclass_generic
+class Threshold:
+    """
+    임계치 + action 매핑. 도메인 무관.
+    """
+    sensor_type: str            # 측정값의 sensor_type과 매칭
+    comparison: str             # ">=", "<=", ">", "<", "=="
+    threshold_value: float
+    action_text: str            # 임계치 초과/미만 시 action 문구
+
+
+# 1) GpuSample → SensorReading 변환 (GPU essay 호환성용)
+
+def gpu_sample_to_readings(sample) -> _List[SensorReading]:
+    """GpuSample 1개를 SensorReading 리스트로 변환 (NA는 제외)."""
+    out = []
+    if sample.temperature_c is not None:
+        out.append(SensorReading(
+            sensor_id=f"card{sample.index}",
+            sensor_type="temperature",
+            value=sample.temperature_c,
+            unit="C",
+        ))
+    if sample.power_w is not None:
+        out.append(SensorReading(
+            sensor_id=f"card{sample.index}",
+            sensor_type="power",
+            value=sample.power_w,
+            unit="W",
+        ))
+    if sample.vram_used_mib is not None:
+        out.append(SensorReading(
+            sensor_id=f"card{sample.index}",
+            sensor_type="vram",
+            value=sample.vram_used_mib,
+            unit="MiB",
+        ))
+    if sample.gpu_use_pct is not None:
+        out.append(SensorReading(
+            sensor_id=f"card{sample.index}",
+            sensor_type="utilization",
+            value=sample.gpu_use_pct,
+            unit="%",
+        ))
+    return out
+
+
+def gpu_thresholds(threshold_c: float = 40.0,
+                    threshold_w: float = 250.0,
+                    threshold_vram: float = 14000.0) -> _List[Threshold]:
+    """GPU 도메인 기본 임계치."""
+    return [
+        Threshold("temperature", ">=", threshold_c,    "Move quickly"),
+        Threshold("power",       ">=", threshold_w,    "Reduce load"),
+        Threshold("vram",        ">=", threshold_vram, "Free memory"),
+    ]
+
+
+# 2) 범용 임계치 검사 / action 도출
+
+def _compare_generic(value: float, comparison: str, threshold: float) -> bool:
+    if comparison == ">=":
+        return value >= threshold
+    if comparison == "<=":
+        return value <= threshold
+    if comparison == ">":
+        return value > threshold
+    if comparison == "<":
+        return value < threshold
+    if comparison == "==":
+        return value == threshold
+    return False
+
+
+def derive_conditions_universal(
+    readings: _List[SensorReading],
+    thresholds: _List[Threshold],
+) -> dict:
+    """
+    readings와 thresholds를 받아 초과/미만 여부 + action 목록을 반환.
+    """
+    triggered = []
+    actions = []
+    for r in readings:
+        for th in thresholds:
+            if r.sensor_type != th.sensor_type:
+                continue
+            if _compare_generic(r.value, th.comparison, th.threshold_value):
+                triggered.append((r, th, th.action_text))
+                if th.action_text not in actions:
+                    actions.append(th.action_text)
+    return {
+        "triggered": triggered,
+        "actions": actions,
+        "primary_action": actions[0] if actions else "",
+    }
+
+
+# 3) 범용 5문장 단락 합성
+
+def _format_reading_generic(r: SensorReading) -> str:
+    """단일 SensorReading을 'the power is 28.0W' 형식으로."""
+    return f"the {r.sensor_type} is {r.value:.1f}{r.unit}"
+
+
+def declarative_clause_generic(readings: _List[SensorReading]) -> str:
+    """평서문: 'The temperature is 44.0°C, and the power is 28.0W, ...'"""
+    if not readings:
+        return ""
+    priority = ["temperature", "voltage", "power", "rpm", "vram", "utilization",
+                "distance", "brightness", "db"]
+    sorted_r = sorted(readings,
+                      key=lambda r: priority.index(r.sensor_type)
+                                    if r.sensor_type in priority else 99)
+    first = sorted_r[0]
+    head = f"The {first.sensor_type} is {first.value:.1f}{first.unit}"
+    if len(sorted_r) == 1:
+        return head + "."
+    rest = [_format_reading_generic(r) for r in sorted_r[1:]]
+    return head + ", and " + ", and ".join(rest) + "."
+
+
+def condition_clause_generic(
+    readings: _List[SensorReading],
+    action: str,
+    primary_sensor: str = "temperature",
+) -> str:
+    """조건문: 'If the temperature is 44.0°C, '"""
+    r = next((r for r in readings if r.sensor_type == primary_sensor), None)
+    if r is None:
+        return ""
+    return f"If the {r.sensor_type} is {r.value:.1f}{r.unit},"
+
+
+def imperative_clause_generic(action: str) -> str:
+    """명령문: 'Move quickly.'"""
+    if not action:
+        return ""
+    return f"{action}."
+
+
+def concessive_clause_generic(
+    readings: _List[SensorReading],
+    primary_action: str,
+) -> str:
+    """양보문"""
+    if primary_action:
+        return (f"The system has detected a threshold breach, however, "
+                f"so the response will be to {primary_action}.")
+    return ("The system is stable, however, "
+            "so the response remains under control.")
+
+
+def _reading_field(r):
+    """SensorReading 또는 GpuSample에서 (value, unit, stype) 추출."""
+    if hasattr(r, "value") and hasattr(r, "unit") and hasattr(r, "sensor_type"):
+        return r.value, r.unit, r.sensor_type
+    if hasattr(r, "temperature_c") and r.temperature_c is not None:
+        return r.temperature_c, "C", "temperature"
+    return None, None, None
+
+
+def _check_threshold(value, threshold) -> bool:
+    if value is None:
+        return False
+    if threshold.comparison == ">=":
+        return value >= threshold.threshold_value
+    if threshold.comparison == "<=":
+        return value <= threshold.threshold_value
+    if threshold.comparison == ">":
+        return value > threshold.threshold_value
+    if threshold.comparison == "<":
+        return value < threshold.threshold_value
+    if threshold.comparison == "==":
+        return value == threshold.threshold_value
+    return False
+
+
+def derive_conditions_universal(readings, thresholds):
+    """readings × thresholds 비교 → action flags."""
+    actions = {}
+    for r in readings:
+        value, unit, stype = _reading_field(r)
+        rid = getattr(r, "sensor_id", None) or getattr(r, "name", "unknown")
+        for th in thresholds:
+            if th.sensor_type != stype:
+                continue
+            if _check_threshold(value, th):
+                actions.setdefault(rid, []).append(th.action_text)
+    return actions
+
+
+def _format_value_with_unit(value, unit) -> str:
+    if unit == "C":
+        return f"{value:.1f}°C"
+    if unit == "V":
+        return f"{value:.1f}V"
+    if unit == "W":
+        return f"{value:.1f}W"
+    if unit == "%":
+        return f"{value:.1f}%"
+    if unit == "MiB":
+        return f"{value:.1f}MiB"
+    if unit == "m":
+        return f"{value:.1f}m"
+    return f"{value:.1f}{unit}"
+
+
+def direction_phrase(value, threshold_value, comparison, unit=""):
+    """
+    비교 방향에 따라 정확한 phrase를 반환.
+
+    Args:
+        value: 측정값
+        threshold_value: 임계값
+        comparison: ">=" 또는 "<=" 또는 ">" 또는 "<" 또는 "=="
+        unit: 단위 (예: "V", "°C")
+
+    Returns:
+        "is higher than or equal to the threshold of {threshold}{unit}"
+        "is below or equal to the threshold of {threshold}{unit}"
+    """
+    if comparison == ">=":
+        if value >= threshold_value:
+            return f"is higher than or equal to the threshold of {threshold_value}{unit}"
+        else:
+            return f"is below the threshold of {threshold_value}{unit}"
+    elif comparison == "<=":
+        if value <= threshold_value:
+            return f"is below or equal to the threshold of {threshold_value}{unit}"
+        else:
+            return f"is higher than the threshold of {threshold_value}{unit}"
+    elif comparison == ">":
+        if value > threshold_value:
+            return f"is higher than the threshold of {threshold_value}{unit}"
+        else:
+            return f"is at or below the threshold of {threshold_value}{unit}"
+    elif comparison == "<":
+        if value < threshold_value:
+            return f"is below the threshold of {threshold_value}{unit}"
+        else:
+            return f"is at or above the threshold of {threshold_value}{unit}"
+    elif comparison == "==":
+        if value == threshold_value:
+            return f"is equal to the threshold of {threshold_value}{unit}"
+        else:
+            return f"is not equal to the threshold of {threshold_value}{unit}"
+    else:
+        return f"is compared to the threshold of {threshold_value}{unit}"
+
+
+def compose_paragraph_robot_language(readings, thresholds) -> str:
+    """
+    Robot Language — 로봇끼리 의사소통하는 결정적 기호 기반 발화.
+    인간이 직접 이해하지 않아도 되며, sensor data의 구조화된 표현.
+    """
+    parts = ["[ROBOT]"]
+    for r in readings:
+        value, unit, stype = _reading_field(r)
+        if value is None:
+            continue
+        rid = getattr(r, "sensor_id", None) or getattr(r, "name", "unknown")
+        parts.append(f"{rid}.{stype}={value}{unit}")
+    
+    # Action 매핑
+    conditions = derive_conditions_universal(readings, thresholds)
+    for sid, acts in conditions.items():
+        for a in acts:
+            parts.append(f"action({sid})={a}")
+    
+    return " ".join(parts)
+
+
+def compose_paragraph_mixed(readings, thresholds) -> str:
+    """
+    Robot-Human Common Language — 로봇과 인간이 함께 사용하는 자연어.
+    """
+    return compose_paragraph_universal(readings, thresholds)
+
+
+def compose_paragraph_universal(readings, thresholds) -> str:
+    """5문장 단락 (도메인 무관, 비교 방향 보강 포함)."""
+    conditions = derive_conditions_universal(readings, thresholds)
+    all_actions = [a for acts in conditions.values() for a in acts]
+    parts = ["The system is monitoring the current sensor readings."]
+
+    detail_items = []
+    for r in readings:
+        value, unit, stype = _reading_field(r)
+        if value is None:
+            continue
+        rid = getattr(r, "sensor_id", None) or getattr(r, "name", "unknown")
+        detail_items.append(
+            f"the {stype} of {rid} is {_format_value_with_unit(value, unit)}"
+        )
+    if detail_items:
+        if len(detail_items) == 1:
+            parts.append(f"The measurement shows that {detail_items[0]}.")
+        else:
+            joined = ", and ".join(detail_items[:-1]) + f", and {detail_items[-1]}"
+            parts.append(f"The measurements show that {joined}.")
+
+    evidence_done = False
+    if all_actions:
+        for r in readings:
+            value, unit, stype = _reading_field(r)
+            if value is None or evidence_done:
+                continue
+            for th in thresholds:
+                if th.sensor_type != stype:
+                    continue
+                if _check_threshold(value, th):
+                    if th.comparison == ">=":
+                        phrase = f"is higher than or equal to the threshold of {th.threshold_value}{unit}"
+                    else:  # "<="
+                        phrase = f"is below or equal to the threshold of {th.threshold_value}{unit}"
+                    parts.append(
+                        f"The {stype} of {_format_value_with_unit(value, unit)} "
+                        f"{phrase}."
+                    )
+                    evidence_done = True
+                    break
+        for action in all_actions:
+            parts.append(f"{action}.")
+    else:
+        for r in readings:
+            value, unit, stype = _reading_field(r)
+            if value is None or evidence_done:
+                continue
+            for th in thresholds:
+                if th.sensor_type != stype:
+                    continue
+                if not _check_threshold(value, th):
+                    if th.comparison == "<=":
+                        phrase = f"is higher than the threshold of {th.threshold_value}{unit}"
+                    else:  # ">="
+                        phrase = f"is below the threshold of {th.threshold_value}{unit}"
+                    parts.append(
+                        f"The {stype} of {_format_value_with_unit(value, unit)} "
+                        f"{phrase}."
+                    )
+                    evidence_done = True
+                    break
+
+    if all_actions:
+        parts.append("The system has detected the condition and will respond accordingly.")
+    else:
+        parts.append("The system is stable and continues to monitor.")
+
+    return " ".join(parts)
+
+
+def compose_essay_timeseries_multidomain(
+    history_per_domain: dict,
+    thresholds_per_domain: dict,
+) -> str:
+    """
+    시계열 + 다중 도메인 essay.
+    history_per_domain: { 'gpu': [[s1_t1, ...], [s1_t2, ...], ...], ... }
+    thresholds_per_domain: { 'gpu': [Threshold, ...], 'battery': [...], ... }
+    """
+    if not history_per_domain:
+        return "No sensor data available."
+
+    domains = list(history_per_domain.keys())
+    n_timesteps = max(len(h) for h in history_per_domain.values()) if history_per_domain else 0
+
+    # 1) Introduction
+    intro = (
+        f"This report describes the multi-domain sensor state over the recent "
+        f"measurement window. The system has monitored {len(domains)} domain(s) "
+        f"({', '.join(domains)}) across {n_timesteps} time step(s)."
+    )
+
+    # 2) Body — 도메인별 단락
+    body_parts = []
+    for domain in domains:
+        history = history_per_domain[domain]
+        thresholds = thresholds_per_domain.get(domain, [])
+
+        if not history:
+            continue
+
+        # 시계열 추세 분석 (온도 기준, 첫 측정 vs 마지막 측정)
+        trend = "stable"
+        try:
+            first_temps = [s.temperature_c for s in history[0] if s.temperature_c is not None]
+            last_temps = [s.temperature_c for s in history[-1] if s.temperature_c is not None]
+            if first_temps and last_temps:
+                delta = last_temps[0] - first_temps[0]
+                if delta > 1.0:
+                    trend = "rising"
+                elif delta < -1.0:
+                    trend = "falling"
+        except (IndexError, TypeError):
+            trend = "unknown"
+
+        # 가장 최근 측정값으로 단락 생성
+        latest_readings = history[-1]
+        domain_body = compose_paragraph_universal(latest_readings, thresholds)
+        body_parts.append(f"[{domain.upper()}] {domain_body} (trend: {trend})")
+
+    body = "\n\n".join(body_parts) if body_parts else "No domain data available."
+
+    # 3) Conclusion
+    conclusion = (
+        "In conclusion, the system has integrated multiple sensor domains and "
+        "responded according to the measured state. The monitoring continues."
+    )
+
+    return f"{intro}\n\n{body}\n\n{conclusion}"
+
+
+def compose_essay_universal(readings, thresholds) -> str:
+    """3-Paragraph essay (도메인 무관)."""
+    rid_set = sorted({getattr(r, "sensor_id", None) or getattr(r, "name", "unknown")
+                      for r in readings})
+    intro = (
+        f"This report describes the current sensor readings from {len(rid_set)} "
+        f"sensor(s) ({', '.join(rid_set)}). The system continuously monitors "
+        f"the physical state to determine whether intervention is required."
+    )
+    body = compose_paragraph_universal(readings, thresholds)
+    conditions = derive_conditions_universal(readings, thresholds)
+    all_actions = [a for acts in conditions.values() for a in acts]
+    if all_actions:
+        conclusion = (
+            f"In conclusion, the system detected a threshold breach and responded "
+            f"with the action(s): {', '.join(all_actions)}. The monitoring continues."
+        )
+    else:
+        conclusion = (
+            "In conclusion, the system observed stable operation across all "
+            "sensors. The monitoring continues."
+        )
+    return f"{intro}\n\n{body}\n\n{conclusion}"

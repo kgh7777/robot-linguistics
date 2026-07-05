@@ -1,0 +1,15 @@
+{
+  "metadata": {
+    "created_at": 1783189575.3839483,
+    "total_essays": 0,
+    "domains": [
+      "gpu",
+      "battery",
+      "motor",
+      "lidar"
+    ],
+    "generator": "build_grounding_dataset_v2.py",
+    "purpose": "Robot Linguistics research - first large-scale grounding dataset"
+  },
+  "essays": []
+}
